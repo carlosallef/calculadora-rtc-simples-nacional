@@ -1,0 +1,12 @@
+# Versão da Receita que a imagem da Eficaz constrói (EFI-741).
+# Trocar de versão é um card: conferir o commit contra a Portaria/ato que a publicou,
+# criar a tag rtc-<versão> NESSE commit e só então editar estas linhas.
+# Ato: Portaria Cotec nº 342/2026 (DOU 13/11/2026), art. 2º, §1º.
+IMAGEM=ghcr.io/carlosallef/rtc-simples
+VERSAO=0.0.6
+TAG=rtc-0.0.6
+COMMIT=c5b0f01c8351c3f0d0795cc617b29d233e9f98df
+# O Simples não tem flyway: o banco sai do flyway do regime regular, nesta tag/commit.
+DB_REPO=carlosallef/calculadora-rtc-regime-regular
+DB_TAG=rtc-1.6.1
+DB_COMMIT=150cccbe414d4a5edea703e4f7a424af5aa222c7

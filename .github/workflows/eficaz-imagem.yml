@@ -1,0 +1,115 @@
+# Eficaz (EFI-741): constrói a imagem da versão fixada em eficaz/VERSAO e publica no GHCR.
+# Só publica quando a versão muda: se a tag da imagem já existe no GHCR, não sobrescreve
+# (o compose da VPS fixa o digest; reconstruir a mesma versão trocaria o digest).
+name: Imagem Eficaz (GHCR)
+
+on:
+  push:
+    branches: [eficaz]
+    paths: [eficaz/**, .github/workflows/eficaz-imagem.yml]
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Republicar mesmo se a tag já existir (troca o digest!)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: eficaz-imagem
+  cancel-in-progress: false
+
+jobs:
+  imagem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ler a versão fixada
+        run: |
+          set -a; . eficaz/VERSAO; set +a
+          for v in IMAGEM VERSAO TAG COMMIT DB_REPO DB_TAG DB_COMMIT; do echo "$v=${!v}" >> "$GITHUB_ENV"; done
+
+      - name: Checkout do código da Receita na tag fixada
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: src
+
+      - name: Checkout do regime regular (fonte do banco)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DB_REPO }}
+          ref: refs/tags/${{ env.DB_TAG }}
+          path: regular
+
+      - name: Conferir que as tags apontam para os commits da Portaria
+        run: |
+          got="$(git -C src rev-parse HEAD)"; echo "tag $TAG -> $got (esperado $COMMIT)"; test "$got" = "$COMMIT"
+          got="$(git -C regular rev-parse HEAD)"; echo "tag $DB_TAG -> $got (esperado $DB_COMMIT)"; test "$got" = "$DB_COMMIT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: A versão já foi publicada?
+        id: existe
+        run: |
+          if docker manifest inspect "$IMAGEM:$VERSAO" >/dev/null 2>&1 && [ "${{ inputs.forcar }}" != "true" ]; then
+            echo "publicar=false" >> "$GITHUB_OUTPUT"; echo "$IMAGEM:$VERSAO já existe — nada a publicar."
+          else
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.existe.outputs.publicar == 'true'
+
+      - name: Construir
+        if: steps.existe.outputs.publicar == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: eficaz/Dockerfile
+          build-contexts: |
+            regular=regular
+          build-args: |
+            REVISION=${{ env.COMMIT }}
+            VERSION=${{ env.VERSAO }}
+            DB_REVISION=${{ env.DB_COMMIT }}
+          load: true
+          tags: ${{ env.IMAGEM }}:${{ env.VERSAO }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Teste de boot (smoke)
+        if: steps.existe.outputs.publicar == 'true'
+        run: |
+          docker run -d --name rtc --memory 1g "$IMAGEM:$VERSAO"
+          for i in $(seq 1 60); do
+            s="$(docker inspect -f '{{.State.Health.Status}}' rtc)"; [ "$s" = healthy ] && break
+            [ "$(docker inspect -f '{{.State.Running}}' rtc)" = true ] || break; sleep 5
+          done
+          docker logs rtc 2>&1 | tail -40
+          test "$(docker inspect -f '{{.State.Health.Status}}' rtc)" = healthy
+          docker exec rtc curl -fsS http://localhost:9103/health
+          echo; docker exec rtc curl -fsS http://localhost:8082/api/versao | tee /tmp/versao.json
+          echo; test -s /tmp/versao.json
+          docker exec rtc curl -fsS 'http://localhost:8082/api/calculadora/simples-nacional/atividades?data=2027-01-01' > /tmp/ativ.json
+          python3 -c 'import json;d=json.load(open("/tmp/ativ.json"));n=len(d) if isinstance(d,list) else len(d.get("content",d));print("atividades:",n);assert n>0'
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGEM:$VERSAO")" = "$COMMIT"
+          docker stats --no-stream rtc
+
+      - name: Publicar
+        if: steps.existe.outputs.publicar == 'true'
+        run: |
+          docker push "$IMAGEM:$VERSAO"
+          d="$(docker inspect -f '{{index .RepoDigests 0}}' "$IMAGEM:$VERSAO")"
+          echo "### Publicado" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$d\` (commit \`$COMMIT\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$d"
