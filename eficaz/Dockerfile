@@ -29,6 +29,7 @@ LABEL org.opencontainers.image.title="rtc-simples" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.version="${VERSION}" \
+      br.com.eficaz.preservar="sim" \
       br.com.eficaz.rtc.db.revision="${DB_REVISION}"
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
